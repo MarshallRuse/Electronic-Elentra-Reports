@@ -1,1 +1,6 @@
 node_modules/
+dist/
+src/server/py/__pycache__
+src/server/py/build
+src/server/py/dist
+src/server/py/venv

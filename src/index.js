@@ -4,21 +4,77 @@ const {
     MenuItem, 
     getCurrentWindow
 } = require('electron').remote;
+
 const Store = require('electron-store');
 const { PythonShell } = require('python-shell');
 const path = require('path');
 const customTitleBar = require('custom-electron-titlebar');
+const isDev = require('electron-is-dev');
+
+const socket = require('socket.io-client')('http://localhost:5000/', {timeout: 600000});
+socket.on('connect', function() {
+    console.log("Socket connected");
+})
+
+socket.on('log', function(msg){
+    pythonLogMessage(msg);
+});
+
+socket.on('progMsg', function(msg){
+    pythonProgressMessage(msg);
+});
+
+socket.on('prog', function(msg){
+    pythonProgressUpdate(msg);
+});
+
+socket.on('requireInput', function(msg){
+    pythonRequiresInput(msg)
+});
+
+socket.on('message', function(msg){
+    console.log("Message received: ", msg);
+});
+
+let timer = undefined;
+let time = 0;
+function startTimer(){
+    timer = setInterval(()=> {
+        console.log(time);
+        time++;
+    }, 1000)
+}
+
+socket.on('disconnect', function(){
+    //clearInterval(timer);
+    console.log('DISCONNECTING SOCKET');
+});
+
+
 
 // Pyshell is instantiated with these options each time a generate-button is clicked.
 // The instance is terminated once a '100' prog message is received.
 let pyOptions = {
     pythonPath: path.join('src','server','py','venv','Scripts','python.exe'),
-    scriptPath: path.join('src','server','py'),
+    scriptPath: isDev ? path.join('src','server','py') : path.join('src', 'server', 'py', 'dist'),
     pythonOptions: ['-u'],
     mode: 'json'
 }
 
 const store = new Store();
+//store.store = {};
+console.log("Store: ", store.store);
+console.log("Entries: ", Object.entries(store.store))
+// If the store has never been initialized, do some initial setup
+if (Object.entries(store.store).length === 0){
+    console.log("No store entries here bub");
+    store.set("FormatExtract", {Options: {}});
+    store.set("GenerateReport", {Options: {}});
+    store.set("ReportSettings", {
+        pathSeparator: path.sep,
+    });
+    console.log("Store is now: ", store.store);
+}
 
 let state = {
     FormatExtract: {
@@ -83,11 +139,14 @@ btnSidebarCollapse.addEventListener("click", () => {
 
 // Menu Controls
 const menuFormatExtract = document.getElementById("menuFormatExtract");
+const menuGenerateReport = document.getElementById("menuGenerateReport");
 const menuReportSettings = document.getElementById("menuReportSettings");
+const menuContact = document.getElementById("menuContact");
 
 menuFormatExtract.addEventListener("click", () => changeAppPage("formatExtract"));
 menuGenerateReport.addEventListener("click", () => changeAppPage("generateReport"));
 menuReportSettings.addEventListener("click", () => changeAppPage("reportSettings"));
+menuContact.addEventListener("click", () => changeAppPage("contact"));
 
 // Progress Toast
 const progressToast = document.getElementById("progressToast");
@@ -195,8 +254,10 @@ btnFormatExtract.addEventListener("click", () => {
         generateButtons[i].setAttribute("disabled", true);
     }
 
-    const pyshell = new PythonShell('CreateReports.py', pyOptions);
-    pythonCommand(pyshell, 'createFormattedExtract', { ...state.FormatExtract, ...state.ReportSettings});
+    //const pyshell = new PythonShell(isDev ? 'CreateReports.py' : 'CreateReports.exe', pyOptions);
+    //pythonCommand(pyshell, 'createFormattedExtract', { ...state.FormatExtract, ...state.ReportSettings});
+    //startTimer();
+    socket.emit('createFormattedExtract', JSON.stringify({ ...state.FormatExtract, ...state.ReportSettings}));
 });
 
 // Option Toggle Values
@@ -325,8 +386,9 @@ btnGenerateReport.addEventListener("click", () => {
         generateButtons[i].setAttribute("disabled", true);
     }
 
-    const pyshell = new PythonShell('CreateReports.py', pyOptions);
-    pythonCommand(pyshell, 'createGeneratedReport', { ...state.GenerateReport, ...state.ReportSettings});
+    // const pyshell = new PythonShell(isDev ? 'CreateReports.py' : 'CreateReports.exe', pyOptions);
+    // pythonCommand(pyshell, 'createGeneratedReport', { ...state.GenerateReport, ...state.ReportSettings});
+    socket.emit('createGeneratedReport', JSON.stringify({ ...state.GenerateReport, ...state.ReportSettings}))
 });
 
 // Option Toggle Values
@@ -434,6 +496,8 @@ btnSaveReportSettings.addEventListener("click", () => {
 
 function objectsEqual(obj1, obj2){
     
+    console.log("Object 1: ", obj1);
+    console.log("Object 2: ", obj2);
     const keys1 = Object.keys(obj1);
     const keys2 = Object.keys(obj2);
 
@@ -532,7 +596,125 @@ function changeAppPage(pageID){
     activeMenuItemLITag.classList.add("active");
 }
 
+function pythonLogMessage(message){
+    msg = JSON.parse(message);
+    console.log("Python Message:");
+    console.log("\t" + JSON.stringify(msg.message));
+}
 
+function pythonProgressMessage(message){
+    msg = JSON.parse(message);
+    console.log("\t" + "progMsg:");
+    console.log("\t\t" + JSON.stringify(msg.message));
+    progressToastText.innerText = msg.message;
+}
+
+function pythonProgressUpdate(message){
+    msg = JSON.parse(message);
+    progressBar.setAttribute("aria-valuenow", msg.message);
+    console.log("%: ", msg.message)
+    progressBar.style.width = `${msg.message}%`;
+
+    if (msg.message === "100"){
+        console.log("keep it 100")
+        progressBarFinished();
+        for (let i = 0; i < generateButtons.length; i++){
+            generateButtons[i].removeAttribute("disabled");
+        }
+    }
+}
+
+function pythonRequiresInput(message){
+    msg = JSON.parse(message);
+    if ("unsupportedVals" in msg.message){
+        let modalBod = document.getElementById("fixUnsupportedEntrustmentsModalBody");
+        let inputGroupDiv = document.createElement('div');
+        inputGroupDiv.classList.add('input-group', 'mb-3');
+
+        let selectedChoices = [];
+
+        for (let i = 0; i < msg.message["unsupportedVals"].length; i++){
+            let prependDiv = document.createElement('div');
+            prependDiv.classList.add('input-group-prepend');
+
+            let label = document.createElement('label');
+            label.classList.add('input-group-text');
+            label.setAttribute('for', `inputGroupSelect${i}`);
+            label.innerText = msg.message["unsupportedVals"][i];
+
+            prependDiv.appendChild(label);
+
+            let selection = document.createElement('select');
+            selection.classList.add('custom-select');
+            selection.id = `inputGroupSelect${i}`;
+
+            let opt0 = document.createElement('option');
+            opt0.selected = true;
+            opt0.innerText = "Choose an Entrustment Level"
+
+            let opt1 = document.createElement('option');
+            opt1.value = "1. Intervention";
+            opt1.innerText = "1. Intervention";
+                
+            let opt2 = document.createElement('option');
+            opt2.value = "2. Direction";
+            opt2.innerText = "2. Direction";
+
+            let opt3 = document.createElement('option');
+            opt3.value = "3. Support";
+            opt3.innerText = "3. Support";
+
+            let opt4 = document.createElement('option');
+            opt4.value = "4. Competent";
+            opt4.innerText = "4. Competent";
+
+            let opt5 = document.createElement('option');
+            opt5.value = "5. Proficient";
+            opt5.innerText = "5. Proficient";
+
+            let opt6 = document.createElement('option');
+            opt6.value = "";
+            opt6.innerText = "<Blank>";
+
+            [opt0, opt1, opt2, opt3, opt4, opt5, opt6].forEach((opt) => {
+                selection.appendChild(opt);
+            });
+
+            inputGroupDiv.appendChild(prependDiv);
+            inputGroupDiv.appendChild(selection);
+            selectedChoices.push([label, selection]);
+        }
+
+        modalBod.appendChild(inputGroupDiv);
+        let btnSaveUnsupportedValFixes = document.getElementById("btnSaveUnsupportedValFixes");
+
+        // This syntax below of declaring the function within the same scope,
+        // and then setting it as a value with bound arguments to a wrapper function
+        // on addEventListener is done to allow the removeEventListener function inside 
+        // fixUnsupportedVals to work.  Anonymous functions (used to pass arguments
+        // to functions in addEventListener) cannot be removed, so a named function with
+        // bound arguments is needed.  The listener needs to be removed so that fresh parameters
+        // can be passed in, since each time the event listener is added it keeps the context of whenever it was
+        // declared, and in the case of the pyshell argument was trying to send messages after the pyshell 
+        // instance had terminated.  Now, a new pyshell instance is passed each time an event listener is added.
+        function fixUnsuportedVals(ps, selChoices){
+            let choicesJSON = {"selectedChoices": {}};
+        
+            selChoices.forEach((pair) => {
+                // the labels inner text is key, the selection value is value
+                choicesJSON.selectedChoices[pair[0].innerText] = pair[1].value;
+            });
+            ps.send(choicesJSON);
+            $('#fixUnsupportedEntrustmentsModal').modal('hide');
+            unsupportedValsModalReset();
+            btnSaveUnsupportedValFixes.removeEventListener('click', wrapperFunc);
+        }
+
+        btnSaveUnsupportedValFixes.addEventListener("click", wrapperFunc = fixUnsuportedVals.bind(btnSaveUnsupportedValFixes, pyshell, selectedChoices));
+
+        $('#fixUnsupportedEntrustmentsModal').modal({backdrop: 'static'});
+    }
+}
 
 function pythonCommand(pyshell, pythonFunction, appState){
     console.log("APP STATE: ", appState);
@@ -540,7 +722,8 @@ function pythonCommand(pyshell, pythonFunction, appState){
     let funcAndState = {
         func: pythonFunction
     }
-    pyshell.send(Object.assign(funcAndState, appState));
+    //pyshell.send(Object.assign(funcAndState, appState));
+
 
     pyshell.on('stderr', function(stderr){
         console.log("PYTHON ERROR: ", stderr);

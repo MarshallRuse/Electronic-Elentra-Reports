@@ -7,7 +7,7 @@ import os
 import json
 import itertools
 # import warnings
-import CommUtils as comms
+import PythonAPI as comms
 
 # warnings.filterwarnings("default")
 # # Format Elentra Extract 
@@ -71,6 +71,9 @@ class ElentraReport:
                 elif x == 2:
                     line = f.readline()
                     self.program = line[line.find(",")+1:].strip()[1:-1]
+                    if self.program.count(",") > 3:
+                        programs = self.abbreviatePrograms(self.program.split(","))
+                        self.program = "_".join(programs)
                 else:
                     f.readline()
         
@@ -249,16 +252,25 @@ class ElentraReport:
                 finalExtractFileName = self.fileExists(self.saveLocation + self.program + " " + self.dateRange + " - FormattedExtract", "xlsx")
                 FEWriter = pd.ExcelWriter(finalExtractFileName, engine='xlsxwriter') # pylint: disable=abstract-class-instantiated
                 self.FormattedExtract.to_excel(FEWriter, sheet_name="DataExtract", index=False, startrow=1, header=False)
+                comms.socketSleep()
                 FEWorkbook = FEWriter.book
                 FEWorksheet = FEWriter.sheets['DataExtract']
                 (maxRow, maxCol) = self.FormattedExtract.shape
                 columnSettings = [{'header': column} for column in self.FormattedExtract.columns]
+                self.commsCount += 1
+                comms.sendMessage(self.progressUpdate(self.commsCount), "prog")
                 FEWorksheet.add_table(0, 0, maxRow, maxCol - 1, {
                     'columns': columnSettings,
                     'name': 'ExtractData'
                 })
                 FEWorksheet.set_column(0, maxCol - 1, 30) # set a more comfortable column width
+                comms.sendMessage("Saving the table...", "progMsg")
+                self.commsCount += 1
+                comms.sendMessage(self.progressUpdate(self.commsCount), "prog")
                 FEWriter.save()
+                comms.sendMessage("Saved the table...", "progMsg")
+                self.commsCount += 1
+                comms.sendMessage(self.progressUpdate(self.commsCount), "prog")
             elif self.options['Options']["createSpinoffExtract"] and not self.options['Options']["spinoffExtractAsTable"]:
                 comms.sendMessage("Giving you a plain ole boring formatted extract...", "progMsg")
                 finalExtractFileName = self.fileExists(self.saveLocation + self.program + " " + self.dateRange + " - FormattedExtract", "xlsx")
@@ -368,6 +380,9 @@ class ElentraReport:
             self.ResidentAnalysis.drop('Assessment Form Code', axis=1, inplace=True)
             self.PTResidentAnalysis.drop('Assessment Form Code', axis=1, inplace=True)
 
+            # Duplicate Resident Column in the PivotTable to have First Column Hidden Lookup for Later Merge Step
+            resColumnCopy = self.PTResidentAnalysis['Resident']
+            self.PTResidentAnalysis.insert(0, "Resident Hidden Lookup Col", resColumnCopy)
 
             # # Create Block Pivot Table
             comms.sendMessage("Pivoting on some blocks...", "progMsg")
@@ -475,6 +490,9 @@ class ElentraReport:
 
             # Format the header row
             # Write the column headers with the defined format.
+            comms.sendMessage("Writing down the ResidentAnalysis headers...", "progMsg")
+            self.commsCount += 1
+            comms.sendMessage(self.progressUpdate(self.commsCount), "prog")
             for col_num, value in enumerate(self.ResidentAnalysis.columns.values):
                 ResAnSheet.write(0, col_num, value, FormatHeader)
 
@@ -482,7 +500,9 @@ class ElentraReport:
             ResAnSheet.set_column(0,0,30, FormatLeftHCenteredV) # Set the Resident column to a width of 30
             ResAnSheet.set_column(1,1,60, FormatLeftHCenteredV) # Set the EPA Code and Name column to a width of 60
             ResAnSheet.set_column(2, 6, 13, FormatCenteredValues) # Set the Entrustment Level columns to a width of 13
-            ResAnSheet.set_column(7, 11, 21, FormatCenteredValues) # Set the Entrustment assessment columns to a width of 21
+            ResAnSheet.set_column(7, 9, 21, FormatCenteredValues) # Set the Entrustment assessment columns to a width of 21
+            ResAnSheet.set_column(10, 10, 32, FormatCenteredValues) # Set the Number of Assessors column to a width of 32
+            ResAnSheet.set_column(11, 11, 21, FormatCenteredValues) # Continue with width of 21
             ResAnSheet.set_column(12, 13, 80, FormatComments) # Set the comments columns to a width of 80
 
 
@@ -518,6 +538,9 @@ class ElentraReport:
 
             # Format the header row
             # Write the column headers with the defined format.
+            comms.sendMessage("Writing down the Resident Pivot Table headers...", "progMsg")
+            self.commsCount += 1
+            comms.sendMessage(self.progressUpdate(self.commsCount), "prog")
             for col_num, value in enumerate(self.PTResidentAnalysis.columns.values):
                 ResAnPTSheet.write(0, col_num, value, FormatHeader)
                 
@@ -527,46 +550,50 @@ class ElentraReport:
             for resident in self.PTResidentAnalysis['Resident'].unique():
                 firstIndex = self.PTResidentAnalysis[self.PTResidentAnalysis['Resident'] == resident].index[0]
                 lastIndex = self.PTResidentAnalysis[self.PTResidentAnalysis['Resident'] == resident].index[-1]
-                ResAnPTSheet.merge_range(firstIndex + 1, 0, lastIndex + 1, 0, resident, FormatMergedResidents)
-                for col in range(1, maxCol):
+                ResAnPTSheet.merge_range(firstIndex + 1, 1, lastIndex + 1, 1, resident, FormatMergedResidents)
+                for col in range(2, maxCol):
                     cellVal = self.PTResidentAnalysis[self.PTResidentAnalysis.columns[col]].iloc[firstIndex]
                     if pd.isnull(cellVal):
                         cellVal = ""
                     ResAnPTSheet.write(firstIndex + 1, col, cellVal, FormatMergedResidents)
 
             # Resize the columns and apply formats
-            ResAnPTSheet.set_column(0,0,30, FormatLeftHCenteredV) # Set the Resident column to a width of 30
-            ResAnPTSheet.set_column(1,1,60, FormatLeftHCenteredV) # Set the EPA Code and Name column to a width of 60
-            ResAnPTSheet.set_column(2, 6, 13, FormatCenteredValues) # Set the Entrustment Level columns to a width of 13
-            ResAnPTSheet.set_column(7, 11, 21, FormatCenteredValues) # Set the Entrustment assessment columns to a width of 21
-            ResAnPTSheet.set_column(12, 13, 80, FormatComments) # Set the comments columns to a width of 80
+            ResAnPTSheet.set_column(0,0,40,None, {'hidden': 1})
+            ResAnPTSheet.set_column(1,1,30, FormatLeftHCenteredV) # Set the Resident column to a width of 30
+            ResAnPTSheet.set_column(2,2,60, FormatLeftHCenteredV) # Set the EPA Code and Name column to a width of 60
+            ResAnPTSheet.set_column(3, 7, 13, FormatCenteredValues) # Set the Entrustment Level columns to a width of 13
+            ResAnPTSheet.set_column(8, 10, 21, FormatCenteredValues) # Set the Entrustment assessment columns to a width of 21
+            ResAnPTSheet.set_column(11,11,32,FormatCenteredValues) # Set the Number of Assessors column to a width of 32
+            ResAnPTSheet.set_column(12,12,21,FormatCenteredValues) # Continue with width of 21
+            ResAnPTSheet.set_column(13, 14, 80, FormatComments) # Set the comments columns to a width of 80
 
 
-            ResAnPTSheet.conditional_format(1, 1, maxRow, 1, {
+            ResAnPTSheet.conditional_format(1, 2, maxRow, 2, {
                 'type': 'text',
                 'criteria': 'containing',
                 'value': '1. TTD',
                 'format': FormatEPATTD
             })
-            ResAnPTSheet.conditional_format(1, 1, maxRow, 1, {
+            ResAnPTSheet.conditional_format(1, 2, maxRow, 2, {
                 'type': 'text',
                 'criteria': 'containing',
                 'value': '2. FOD',
                 'format': FormatEPAFOD
             })
-            ResAnPTSheet.conditional_format(1, 1, maxRow, 1, {
+            ResAnPTSheet.conditional_format(1, 2, maxRow, 2, {
                 'type': 'text',
                 'criteria': 'containing',
                 'value': '3. COD',
                 'format': FormatEPACOD
             })
 
-            ResAnPTSheet.conditional_format(1, 9, maxRow, 9, {
+            ResAnPTSheet.conditional_format(1, 10, maxRow, 10, {
                 'type': 'text',
                 'criteria': 'containing',
                 'value': 'No',
                 'format': FormatExcelBad
             })
+
 
 
             #### Format the Block sheet ####
@@ -576,6 +603,9 @@ class ElentraReport:
 
             # Format the header row
             # Write the column headers with the defined format.
+            comms.sendMessage("and the Block Headers...", "progMsg")
+            self.commsCount += 1
+            comms.sendMessage(self.progressUpdate(self.commsCount), "prog")
             for col_num, value in enumerate(self.PTBlock.columns.values):
                 BlockSheet.write(0, col_num, value, FormatHeader)
                 
@@ -603,6 +633,9 @@ class ElentraReport:
 
             # Format the header row
             # Write the column headers with the defined format.
+            comms.sendMessage("and the Site headers...", "progMsg")
+            self.commsCount += 1
+            comms.sendMessage(self.progressUpdate(self.commsCount), "prog")
             for col_num, value in enumerate(self.PTSite.columns.values):
                 SiteSheet.write(0, col_num, value, FormatHeader)
     
@@ -631,7 +664,7 @@ class ElentraReport:
         if self.reportType == "Formatted Extract":
             return str(round((fraction / 11) * 100))
         elif self.reportType == "Full Report":
-            return str(round((fraction / 20) * 100))
+            return str(round((fraction / 27) * 100))
 
     def fileExists(self, originalFile, ext):
         actualname = "%s.%s" % (originalFile, ext)
@@ -646,3 +679,19 @@ class ElentraReport:
             responseDict = json.loads(input())
             for key, val in responseDict["selectedChoices"].items():
                 self.data.replace({"Entrustment / Overall Category": {key: val}}, inplace=True)
+    
+    def abbreviatePrograms(self, programsList):
+        abbrevDict = {
+            "Adult Gastroenterology": "Gastro",
+            "Adult Nephrology": "Nephro",
+            "Adult Rheumatology": "Rheum",
+            "Emergency Medicine": "Emerge Med",
+            "General Internal Medicine": "GIM",
+            "Geriatric Medicine": "Geriatrics",
+            "Internal Medicine": "IM",
+            "Medical Oncology": "Med Onc"
+            }
+        for prog in programsList:
+            prog = abbrevDict[prog.strip()]
+        
+        return programsList
